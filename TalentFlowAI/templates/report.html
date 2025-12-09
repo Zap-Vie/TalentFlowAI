@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Candidate Report</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Plus Jakarta Sans', sans-serif; } </style>
+</head>
+<body class="bg-indigo-50 min-h-screen p-6">
+    <div class="max-w-5xl mx-auto bg-white rounded-[2rem] shadow-xl overflow-hidden border border-indigo-100">
+        
+        <!-- HEADER -->
+        <div class="bg-slate-900 p-8 text-white flex justify-between items-center">
+            <div class="flex items-center gap-5">
+                <div class="h-16 w-16 bg-indigo-600 rounded-2xl flex items-center justify-center text-2xl font-bold border-2 border-slate-700">
+                    {{ candidate.name[0] }}
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold">{{ candidate.name }}</h1>
+                    <p class="opacity-70 text-sm mt-1">{{ room.field }} • {{ candidate.email }}</p>
+                </div>
+            </div>
+            <div class="text-right">
+                <div class="text-4xl font-bold text-green-400">{{ total }} <span class="text-lg text-slate-500">/ {{ max }}</span></div>
+                <div class="text-[10px] font-bold tracking-widest uppercase opacity-60">TOTAL SCORE</div>
+            </div>
+        </div>
+
+        <div class="p-8 space-y-8">
+            
+            <!-- OVERALL ASSESSMENT (NEW) -->
+            {% if overall %}
+            <div class="bg-gradient-to-br from-indigo-50 to-purple-50 p-6 rounded-2xl border border-indigo-100">
+                <div class="flex justify-between items-center mb-4 border-b border-indigo-100 pb-3">
+                    <h3 class="font-bold text-indigo-900 flex items-center gap-2">
+                        <span class="text-xl">🤖</span> AI Overall Analysis
+                    </h3>
+                    <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
+                        {% if overall.suitability == 'High' %} bg-green-100 text-green-700
+                        {% elif overall.suitability == 'Medium' %} bg-amber-100 text-amber-700
+                        {% else %} bg-red-100 text-red-700 {% endif %}">
+                        Fit: {{ overall.suitability }}
+                    </span>
+                </div>
+                
+                <p class="text-slate-700 text-sm leading-relaxed mb-4 italic">"{{ overall.final_comment }}"</p>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <p class="text-xs font-bold text-green-600 uppercase mb-2">✅ Key Strengths</p>
+                        <ul class="list-disc pl-4 text-sm text-slate-600 space-y-1">
+                            {% for s in overall.strengths %} <li>{{ s }}</li> {% endfor %}
+                        </ul>
+                    </div>
+                    <div>
+                        <p class="text-xs font-bold text-red-500 uppercase mb-2">⚠️ Areas to Improve</p>
+                        <ul class="list-disc pl-4 text-sm text-slate-600 space-y-1">
+                            {% for w in overall.weaknesses %} <li>{{ w }}</li> {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- DETAILED VIDEOS -->
+            <h3 class="font-bold text-slate-800 text-lg border-b border-slate-100 pb-2">Detailed Responses</h3>
+            <div class="space-y-6">
+                {% for idx, item in results.items() %}
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col md:flex-row gap-6 shadow-sm hover:border-indigo-200 transition">
+                    <div class="w-full md:w-1/3 aspect-video bg-black rounded-xl overflow-hidden relative">
+                        <video controls class="w-full h-full object-cover">
+                            <source src="/uploads/{{ item.file }}" type="video/webm">
+                        </video>
+                        <span class="absolute top-2 left-2 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded backdrop-blur">Q{{ idx|int + 1 }}</span>
+                    </div>
+                    <div class="flex-1">
+                        <p class="font-bold text-slate-800 mb-1">"{{ questions[idx|int].question }}"</p>
+                        <p class="text-xs text-slate-400 mb-3 italic">Target: {{ questions[idx|int].criteria }}</p>
+                        
+                        <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <p class="text-xs font-bold text-indigo-600 uppercase mb-1">AI Feedback</p>
+                            <p class="text-sm text-slate-600 leading-relaxed">"{{ item.summary }}"</p>
+                        </div>
+                        <div class="mt-3 flex justify-end">
+                            <span class="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-lg font-bold text-sm">{{ item.score }}/10</span>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="p-6 text-center border-t border-slate-100">
+            <a href="/dashboard" class="text-slate-500 font-bold hover:text-indigo-600 text-sm">← Back to Dashboard</a>
+        </div>
+    </div>
+</body>
+</html>

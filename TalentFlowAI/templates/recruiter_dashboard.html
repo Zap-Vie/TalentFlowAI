@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Recruiter Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Plus Jakarta Sans', sans-serif; } </style>
+</head>
+<body class="bg-indigo-50 min-h-screen p-6">
+    <div id="loadingOverlay" class="hidden fixed inset-0 z-50 bg-slate-900/90 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+        <div class="w-16 h-16 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
+        <h2 class="text-xl font-bold animate-pulse">AI is processing...</h2>
+    </div>
+
+    <div class="max-w-7xl mx-auto">
+        <div class="flex justify-between items-center mb-8 bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+            <h1 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <span class="w-8 h-8 bg-purple-600 text-white rounded-lg flex items-center justify-center">R</span> 
+                {{ recruiter_name }}'s Workspace
+            </h1>
+            <a href="/logout" class="text-slate-500 font-bold hover:text-red-600 px-4 py-2 text-sm">Sign Out</a>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- CREATE INTERVIEW FORM -->
+            <div class="bg-white p-6 rounded-2xl shadow-sm h-fit border border-slate-200 lg:col-span-1">
+                <h2 class="font-bold text-slate-800 mb-6">Create New Interview</h2>
+                
+                <form method="POST" class="space-y-5">
+                    <div>
+                        <label class="text-xs font-bold text-slate-500 uppercase">Role Title</label>
+                        <input type="text" name="field" required placeholder="e.g. Senior Backend Dev" class="w-full border p-3 rounded-xl mt-1 bg-slate-50 focus:ring-2 focus:ring-purple-500 outline-none">
+                    </div>
+
+                    <div>
+                        <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Method</label>
+                        <div class="flex bg-slate-100 p-1 rounded-xl">
+                            <button type="button" onclick="setMode('ai')" id="btnAi" class="flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-purple-700 transition">AI Auto</button>
+                            <button type="button" onclick="setMode('manual')" id="btnManual" class="flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:bg-white/50 transition">Manual</button>
+                        </div>
+                        <input type="hidden" name="mode" id="modeInput" value="ai">
+                    </div>
+
+                    <!-- AI PANEL -->
+                    <div id="aiPanel">
+                        <div class="flex justify-between text-xs font-bold text-slate-500 uppercase mb-2">
+                            <span>Questions</span>
+                            <span id="qCountValue" class="text-purple-600 text-sm font-bold">5</span>
+                        </div>
+                        <input type="range" name="count" min="3" max="10" value="5" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-purple-600" oninput="document.getElementById('qCountValue').innerText = this.value">
+                    </div>
+
+                    <!-- MANUAL PANEL -->
+                    <div id="manualPanel" class="hidden space-y-3">
+                        <div id="questionsContainer" class="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                            <!-- JS will add inputs here -->
+                        </div>
+                        <button type="button" onclick="addManualQuestion()" class="w-full py-2 border-2 border-dashed border-slate-300 rounded-xl text-slate-500 text-xs font-bold hover:border-purple-400 hover:text-purple-600 transition">
+                            + Add Question
+                        </button>
+                    </div>
+
+                    <button class="w-full bg-purple-600 text-white py-3.5 rounded-xl font-bold hover:bg-purple-700 transition shadow-lg shadow-purple-200 mt-4">
+                        🚀 Launch Interview
+                    </button>
+                </form>
+            </div>
+
+            <!-- LIST -->
+            <div class="lg:col-span-2 space-y-6">
+                <h2 class="font-bold text-slate-800 text-lg">Active Interviews <span class="bg-purple-100 text-purple-700 text-xs px-2 py-1 rounded-full">{{ data|length }}</span></h2>
+                
+                {% for item in data %}
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:border-purple-300 transition">
+                    <div class="flex justify-between items-start mb-4 border-b border-slate-50 pb-4">
+                        <div>
+                            <h3 class="font-bold text-xl text-slate-800">{{ item.field }}</h3>
+                            <div class="flex items-center gap-3 mt-2 text-xs">
+                                <span class="bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">CODE: {{ item.id }}</span>
+                                <span class="text-slate-400">{{ item.date }}</span>
+                                <span class="text-slate-400">{{ item.question_count }} Qs</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="text-xs text-slate-400 uppercase bg-slate-50/50"><tr><th class="pb-2 pl-2">Candidate</th><th class="pb-2">Progress</th><th class="pb-2 text-right">Action</th></tr></thead>
+                            <tbody class="text-sm">
+                                {% for c in item.candidates %}
+                                <tr class="border-t border-slate-50 hover:bg-purple-50/30">
+                                    <td class="py-3 pl-2 font-bold text-slate-700">{{ c.name }} <br><span class="font-normal text-slate-400 text-xs">{{ c.email }}</span></td>
+                                    <td class="py-3">
+                                        <span class="bg-amber-50 text-amber-600 px-2 py-1 rounded text-xs font-bold">{{ c.count }}/{{ item.question_count }}</span>
+                                    </td>
+                                    <td class="py-3 text-right">
+                                        <a href="/report/{{ c.id }}" onclick="showLoading()" class="text-purple-600 font-bold text-xs bg-purple-50 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition">View Report</a>
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="3" class="py-4 text-center text-slate-400 text-xs italic">No candidates yet.</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-slate-200 text-slate-400">No interviews found.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showLoading() { document.getElementById('loadingOverlay').classList.remove('hidden', 'flex'); document.getElementById('loadingOverlay').classList.add('flex'); }
+        window.onpageshow = function(event) { if (event.persisted) document.getElementById('loadingOverlay').classList.add('hidden'); };
+
+        function setMode(mode) {
+            document.getElementById('modeInput').value = mode;
+            if(mode === 'ai') {
+                document.getElementById('aiPanel').classList.remove('hidden');
+                document.getElementById('manualPanel').classList.add('hidden');
+                document.getElementById('btnAi').className = "flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-purple-700 transition";
+                document.getElementById('btnManual').className = "flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:bg-white/50 transition";
+            } else {
+                document.getElementById('aiPanel').classList.add('hidden');
+                document.getElementById('manualPanel').classList.remove('hidden');
+                document.getElementById('btnManual').className = "flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-purple-700 transition";
+                document.getElementById('btnAi').className = "flex-1 py-2 text-xs font-bold rounded-lg text-slate-500 hover:bg-white/50 transition";
+                if(document.getElementById('questionsContainer').children.length === 0) addManualQuestion();
+            }
+        }
+
+        function addManualQuestion() {
+            const container = document.getElementById('questionsContainer');
+            if(container.children.length >= 10) return alert("Max 10 questions allowed.");
+            
+            const div = document.createElement('div');
+            div.className = "bg-slate-50 p-3 rounded-xl border border-slate-200 relative group";
+            div.innerHTML = `
+                <input name="manual_qs[]" placeholder="Enter Question..." class="w-full bg-transparent border-b border-slate-200 pb-1 mb-2 text-sm font-bold focus:border-purple-500 outline-none" required>
+                <input name="manual_cs[]" placeholder="Grading Criteria (e.g. Confidence)" class="w-full bg-transparent text-xs text-slate-500 italic focus:text-purple-600 outline-none" required>
+                <button type="button" onclick="this.parentElement.remove()" class="absolute top-2 right-2 text-slate-300 hover:text-red-500 font-bold text-xs opacity-0 group-hover:opacity-100 transition">✕</button>
+            `;
+            container.appendChild(div);
+        }
+    </script>
+</body>
+</html>
