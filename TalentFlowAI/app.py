@@ -4,8 +4,11 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-import uuid, socket, os, json, random, string, time, PyPDF2
+import uuid, socket, os, json, random, string, time, PyPDF2, pytz
 from datetime import datetime
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from sqlalchemy import event
+import shutil
 
 # 1. SETUP
 load_dotenv()
@@ -17,9 +20,15 @@ api_key = os.getenv('GOOGLE_API_KEY')
 if not api_key: print("⚠️ MISSING API KEY!")
 else: genai.configure(api_key=api_key)
 
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
 def get_ai_model():
-    
-    return genai.GenerativeModel('gemini-flash-latest')
+    return genai.GenerativeModel('gemini-flash-lite-latest') 
 
 model = get_ai_model()
 
@@ -39,25 +48,30 @@ class User(db.Model):
     password_hash = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), default='recruiter')
     full_name = db.Column(db.String(100))
+    interviews = db.relationship('Interview', backref='recruiter', cascade="all, delete-orphan", lazy=True)
 
 class Interview(db.Model):
     id = db.Column(db.String(4), primary_key=True)
     recruiter_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     field = db.Column(db.String(100), nullable=False)
-    # Lưu danh sách câu hỏi KÈM tiêu chí: [{"question": "...", "criteria": "..."}, ...]
     base_questions = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.String(20))
+    candidates = db.relationship('Candidate', backref='interview_room', cascade="all, delete-orphan", lazy=True)
 
 class Candidate(db.Model):
     id = db.Column(db.String(36), primary_key=True)
     room_id = db.Column(db.String(4), db.ForeignKey('interview.id'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(100), nullable=False)
+    videos = db.relationship('Video', backref='candidate', cascade="all, delete-orphan", lazy=True)
+    
+    # --- UPDATE: Thêm cột lưu đường dẫn folder ---
+    folder_path = db.Column(db.String(255), nullable=True)
+    
     cv_filename = db.Column(db.String(200), nullable=True)
     personal_questions = db.Column(db.Text, nullable=True) 
-    # Lưu đánh giá tổng quan của AI
     overall_analysis = db.Column(db.Text, nullable=True)
-    videos = db.relationship('Video', backref='candidate', lazy=True)
+    videos = db.relationship('Video', backref='candidate', cascade="all, delete-orphan", lazy=True)
 
 class Video(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -66,6 +80,18 @@ class Video(db.Model):
     filename = db.Column(db.String(200), nullable=False)
     ai_score = db.Column(db.Float, default=0.0)
     ai_summary = db.Column(db.Text, default="")
+
+
+@event.listens_for(Candidate, 'after_delete')
+def delete_candidate_files(mapper, connection, target):
+    if target.folder_path:
+        folder_to_delete = os.path.join(app.config['UPLOAD_FOLDER'], target.folder_path)
+        if os.path.exists(folder_to_delete):
+            try:
+                shutil.rmtree(folder_to_delete)
+                print(f"🗑️ Đã xóa sạch folder: {folder_to_delete}")
+            except Exception as e:
+                print(f"⚠️ Lỗi xóa folder: {e}")
 
 # ================= AI LOGIC =================
 
@@ -115,6 +141,7 @@ def ai_grade_single_video(video_path, question, criteria):
     if not os.path.exists(video_path): return {"score": 0, "summary": "Video missing."}
     try:
         print(f"🤖 Grading: {question[:30]}...")
+        # Upload file lên Gemini
         video_file = genai.upload_file(path=video_path, mime_type="video/webm")
         
         # Retry logic for processing
@@ -138,7 +165,8 @@ def ai_grade_single_video(video_path, question, criteria):
         response = model.generate_content([video_file, prompt], generation_config={"response_mime_type": "application/json"})
         try: genai.delete_file(video_file.name)
         except: pass
-        return json.loads(response.text)
+        parsed = clean_json_text(response.text)
+        return parsed if parsed else {"score": 0, "summary": "AI Error: Invalid format"}
     except Exception as e:
         print(f"❌ Grading Error: {e}")
         return {"score": 0, "summary": "AI Error. Please check manually."}
@@ -146,7 +174,6 @@ def ai_grade_single_video(video_path, question, criteria):
 def ai_generate_overall_report(candidate_name, role, qa_results):
     print("🤖 Generating Overall Report...")
     try:
-        # Tổng hợp dữ liệu đầu vào cho AI
         summary_text = f"Candidate: {candidate_name}\nRole: {role}\n\nPerformance:\n"
         for res in qa_results:
             summary_text += f"- Q: {res['question']}\n  Score: {res['score']}\n  Feedback: {res['summary']}\n\n"
@@ -205,7 +232,17 @@ def manager_dashboard():
         return redirect(url_for('manager_dashboard'))
     return render_template('manager_dashboard.html', users=User.query.filter_by(role='recruiter').all())
 
-# --- RECRUITER DASHBOARD (NÂNG CẤP) ---
+@app.route('/delete_user/<int:uid>')
+def delete_user(uid):
+    if session.get('role') != 'manager': 
+        return redirect(url_for('login'))
+    user = db.session.get(User, uid)
+    if user and user.id != session.get('user_id'):
+        db.session.delete(user)
+        db.session.commit()
+    return redirect(url_for('manager_dashboard'))
+
+# --- RECRUITER DASHBOARD ---
 @app.route('/dashboard', methods=['GET', 'POST'])
 def recruiter_dashboard():
     if session.get('role') != 'recruiter': return redirect(url_for('login'))
@@ -213,14 +250,11 @@ def recruiter_dashboard():
     if request.method == 'POST':
         field = request.form.get('field')
         mode = request.form.get('mode')
-        
         final_qs = []
         
         if mode == 'manual':
-            # Lấy danh sách câu hỏi và tiêu chí từ form động
             q_list = request.form.getlist('manual_qs[]')
             c_list = request.form.getlist('manual_cs[]')
-            # Gộp lại thành list objects
             for q, c in zip(q_list, c_list):
                 if q.strip(): final_qs.append({"question": q.strip(), "criteria": c.strip() or "General assessment"})
         else:
@@ -234,20 +268,18 @@ def recruiter_dashboard():
             id=rid, 
             recruiter_id=session['user_id'], 
             field=field, 
-            base_questions=json.dumps(final_qs), # Lưu JSON object
+            base_questions=json.dumps(final_qs),
             created_at=datetime.now().strftime("%Y-%m-%d %H:%M")
         ))
         db.session.commit()
         return redirect(url_for('recruiter_dashboard'))
 
-    # Display Data
     my_interviews = Interview.query.filter_by(recruiter_id=session['user_id']).order_by(Interview.created_at.desc()).all()
     dashboard_data = []
     for i in my_interviews:
         cands = Candidate.query.filter_by(room_id=i.id).all()
         cand_list = [{"id": c.id, "name": c.name, "email": c.email, "count": Video.query.filter_by(candidate_id=c.id).count()} for c in cands]
         
-        # Đếm số câu hỏi (xử lý an toàn vì base_questions giờ là JSON phức tạp)
         try: q_len = len(json.loads(i.base_questions))
         except: q_len = 0
             
@@ -261,28 +293,34 @@ def view_report(cid):
     cand = db.session.get(Candidate, cid)
     room = db.session.get(Interview, cand.room_id)
     
-    questions_data = json.loads(cand.personal_questions) # List of {question, criteria}
+    questions_data = json.loads(cand.personal_questions)
     videos = Video.query.filter_by(candidate_id=cand.id).all()
     
-    # 1. Chấm điểm từng video
     results = {}
     total_score = 0
-    qa_results_for_ai = [] # Dữ liệu sạch để gửi cho AI tổng hợp
+    qa_results_for_ai = []
     
     for v in videos:
-        # Nếu chưa chấm -> Gọi AI
+        # --- UPDATE: Đường dẫn vật lý đầy đủ để AI đọc ---
+        # Nếu là dữ liệu cũ (chưa có folder_path), fallback về thư mục gốc (tùy chọn)
+        folder = cand.folder_path if cand.folder_path else ""
+        video_full_path = os.path.join(app.config['UPLOAD_FOLDER'], folder, v.filename)
+        
+        # --- UPDATE: Đường dẫn web để hiển thị HTML ---
+        # Sử dụng forward slash cho URL: folder/filename
+        web_path = f"{folder}/{v.filename}" if folder else v.filename
+
         if v.ai_score == 0 and not v.ai_summary:
             q_data = questions_data[v.question_index]
-            # Gọi hàm chấm điểm mới có criteria
             ai_out = ai_grade_single_video(
-                os.path.join(app.config['UPLOAD_FOLDER'], v.filename), 
+                video_full_path, 
                 q_data['question'], 
                 q_data.get('criteria', '')
             )
             v.ai_score, v.ai_summary = ai_out.get('score', 0), ai_out.get('summary', '')
             db.session.commit()
         
-        results[str(v.question_index)] = {"score": v.ai_score, "summary": v.ai_summary, "file": v.filename}
+        results[str(v.question_index)] = {"score": v.ai_score, "summary": v.ai_summary, "file": web_path}
         total_score += v.ai_score
         qa_results_for_ai.append({
             "question": questions_data[v.question_index]['question'],
@@ -290,9 +328,8 @@ def view_report(cid):
             "summary": v.ai_summary
         })
 
-    # 2. Tạo báo cáo tổng quan (Nếu chưa có)
     overall = None
-    if len(videos) == len(questions_data): # Chỉ tạo khi đã nộp đủ bài
+    if len(videos) == len(questions_data):
         if not cand.overall_analysis:
             overall = ai_generate_overall_report(cand.name, room.field, qa_results_for_ai)
             if overall:
@@ -302,13 +339,13 @@ def view_report(cid):
             overall = json.loads(cand.overall_analysis)
 
     return render_template('report.html', 
-                         candidate=cand, 
-                         room=room, 
-                         results=results, 
-                         total=round(total_score,1), 
-                         max=len(questions_data)*10, 
-                         questions=questions_data, # Truyền cả object question+criteria
-                         overall=overall)
+                          candidate=cand, 
+                          room=room, 
+                          results=results, 
+                          total=round(total_score,1), 
+                          max=len(questions_data)*10, 
+                          questions=questions_data, 
+                          overall=overall)
 
 # --- CANDIDATE FLOW ---
 @app.route('/candidate', methods=['GET', 'POST'])
@@ -316,26 +353,41 @@ def candidate_portal():
     if request.method == 'POST':
         rid = request.form.get('room_id').upper().strip()
         email = request.form.get('email').strip().lower()
-        room = db.session.get(Interview, rid)
+        raw_name = request.form.get('name').strip()
         
+        room = db.session.get(Interview, rid)
         if not room: return render_template('candidate_portal.html', error="Invalid Room Code")
         
+        # Check duplicate
         exist = Candidate.query.filter_by(room_id=rid, email=email).first()
         if exist:
-            if exist.name.lower() == request.form.get('name').lower():
+            if exist.name.lower() == raw_name.lower():
                 session['cid'] = exist.id
                 return redirect(url_for('candidate_review'))
             else: return render_template('candidate_portal.html', error="Email already used by another name!")
+
+        # --- UPDATE: Tạo cấu trúc Folder DD_MM_YYYY_HH_mm_user ---
+        vn_tz = pytz.timezone('Asia/Bangkok')
+        timestamp = datetime.now(vn_tz).strftime("%d_%m_%Y_%H_%M")
+        safe_name = secure_filename(raw_name).replace("-", "_")
+        if not safe_name: safe_name = "user"
+        
+        user_folder_name = f"{timestamp}_{safe_name}"
+        full_folder_path = os.path.join(app.config['UPLOAD_FOLDER'], user_folder_name)
+        os.makedirs(full_folder_path, exist_ok=True)
+        # --------------------------------------------------------
 
         # CV Handle
         cv_file = request.files.get('cv_file')
         cv_text = ""
         cv_name = None
         if cv_file and cv_file.filename:
-            cv_name = secure_filename(f"{uuid.uuid4()}_{cv_file.filename}")
-            path = os.path.join(app.config['UPLOAD_FOLDER'], cv_name)
-            cv_file.save(path)
-            cv_text = extract_text_from_pdf(path)
+            # Lưu CV vào folder con với tên chuẩn
+            ext = cv_file.filename.rsplit('.', 1)[1].lower() if '.' in cv_file.filename else 'pdf'
+            cv_name = f"CV.{ext}"
+            cv_path = os.path.join(full_folder_path, cv_name)
+            cv_file.save(cv_path)
+            cv_text = extract_text_from_pdf(cv_path)
 
         # Merge Questions
         base_qs = json.loads(room.base_questions)
@@ -343,16 +395,25 @@ def candidate_portal():
         
         if cv_text:
             cv_qs = ai_generate_cv_questions(cv_text, room.field)
-            # Chuẩn hóa format cho CV questions
             for q in cv_qs:
-                if isinstance(q, str): # Nếu AI cũ trả về string
+                if isinstance(q, str): 
                     final_qs.append({"question": q, "criteria": "Based on CV verification."})
                 elif isinstance(q, dict):
                     final_qs.append(q)
 
         cid = str(uuid.uuid4())
         session['cid'] = cid
-        db.session.add(Candidate(id=cid, room_id=rid, name=request.form.get('name'), email=email, cv_filename=cv_name, personal_questions=json.dumps(final_qs)))
+        
+        # Lưu folder_path vào DB
+        db.session.add(Candidate(
+            id=cid, 
+            room_id=rid, 
+            name=raw_name, 
+            email=email, 
+            folder_path=user_folder_name, # <-- Cột mới
+            cv_filename=cv_name, 
+            personal_questions=json.dumps(final_qs)
+        ))
         db.session.commit()
         return redirect(url_for('interview_room'))
     return render_template('candidate_portal.html')
@@ -362,7 +423,6 @@ def interview_room():
     if not session.get('cid'): return redirect(url_for('candidate_portal'))
     cand = db.session.get(Candidate, session.get('cid'))
     qs_data = json.loads(cand.personal_questions)
-    # Chỉ lấy list text câu hỏi để hiển thị cho gọn ở JS
     simple_qs = [q['question'] for q in qs_data]
     return render_template('interview.html', questions=simple_qs)
 
@@ -384,14 +444,22 @@ def upload_video():
     if not cid: return jsonify({"status": "error"}), 400
     file = request.files['video']
     idx = request.form.get('question_index')
-    if file:
-        fname = secure_filename(f"{cid}_q{idx}.webm")
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
+    
+    cand = db.session.get(Candidate, cid)
+
+    if file and cand:
+        # --- UPDATE: Lưu vào folder riêng với tên ngắn gọn ---
+        # Tên file: Q1.webm, Q2.webm (idx bắt đầu từ 0 nên +1 cho thân thiện)
+        fname = f"Q{int(idx) + 1}.webm"
+        
+        # Đường dẫn: uploads/FOLDER_USER/Q1.webm
+        save_path = os.path.join(app.config['UPLOAD_FOLDER'], cand.folder_path, fname)
+        file.save(save_path)
         
         exist = Video.query.filter_by(candidate_id=cid, question_index=int(idx)).first()
         if exist: 
             exist.filename = fname
-            exist.ai_score = 0 # Reset để chấm lại
+            exist.ai_score = 0 
             exist.ai_summary = ""
         else: db.session.add(Video(candidate_id=cid, question_index=int(idx), filename=fname))
         
@@ -399,8 +467,11 @@ def upload_video():
         return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 500
 
-@app.route('/uploads/<filename>')
-def uploaded_file(filename): return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+# --- UPDATE: Serve file từ folder con (Nested paths) ---
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename): 
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 @app.route('/logout')
 def logout(): session.clear(); return redirect(url_for('home'))
 
